@@ -146,7 +146,11 @@ public static class ServerComposition
         int pinnedMaxChars = PinnedTierLimits.DefaultMaxContentChars,
         int hotMaxChars = 1200,
         ReindexProgress? reindexProgress = null,
-        string querySource = "assistant")
+        string querySource = "assistant",
+        string retrievalProjectScoping = "off",
+        string defaultStoreScope = "global",
+        EffectiveProjectResolver? effectiveProjectResolver = null,
+        string? explicitProjectOverride = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(vectors);
@@ -161,8 +165,14 @@ public static class ServerComposition
 
         // ---- Memory (18, +1 assistant-only memory_feedback when a
         //      RetrievalEventLog is wired — see below) ----
-        registry.Register(new MemoryStoreHandler(store, embedder, vectors, scopeDefault, pinnedMaxChars, hotMaxChars));
-        registry.Register(new MemorySearchHandler(embedder, hybrid, scopeDefault, retrievalLog, syncQueue, querySource));
+        registry.Register(new MemoryStoreHandler(store, embedder, vectors, scopeDefault, pinnedMaxChars, hotMaxChars,
+            defaultStoreScope: defaultStoreScope,
+            effectiveProjectResolver: effectiveProjectResolver,
+            explicitProjectOverride: explicitProjectOverride));
+        registry.Register(new MemorySearchHandler(embedder, hybrid, scopeDefault, retrievalLog, syncQueue, querySource,
+            projectScoping: retrievalProjectScoping,
+            effectiveProjectResolver: effectiveProjectResolver,
+            explicitProjectOverride: explicitProjectOverride));
         // Assistant-only feedback tool (Task 1.6). Registered immediately after
         // memory_search because it consumes the retrievalId memory_search emits.
         // Both production paths (sqlite + cortex) wire a RetrievalEventLog, so
@@ -499,7 +509,11 @@ public static class ServerComposition
                 pinnedMaxChars: ResolvePinnedMaxChars(cfg),
                 hotMaxChars: cfg.Tiers.Hot.MaxContentChars,
                 reindexProgress: reindexProgress,
-                querySource: querySource);
+                querySource: querySource,
+                retrievalProjectScoping: ResolveRetrievalProjectScoping(cfg),
+                defaultStoreScope: ResolveDefaultStoreScope(cfg),
+                effectiveProjectResolver: new EffectiveProjectResolver(),
+                explicitProjectOverride: ResolveExplicitProject(cfg));
 
             registry.Register(new UsageStatusHandler(usageQuery));
 
@@ -599,7 +613,11 @@ public static class ServerComposition
                 scopeDefault: ResolveScopeDefault(cfg),
                 pinnedMaxChars: ResolvePinnedMaxChars(cfg),
                 hotMaxChars: cfg.Tiers.Hot.MaxContentChars,
-                querySource: querySource);
+                querySource: querySource,
+                retrievalProjectScoping: ResolveRetrievalProjectScoping(cfg),
+                defaultStoreScope: ResolveDefaultStoreScope(cfg),
+                effectiveProjectResolver: new EffectiveProjectResolver(),
+                explicitProjectOverride: ResolveExplicitProject(cfg));
 
             return new ServerCompositionHandles(dataSource, registry, store, storageMode);
         }
@@ -813,7 +831,11 @@ public static class ServerComposition
                 pinnedMaxChars: ResolvePinnedMaxChars(cfg),
                 hotMaxChars: cfg.Tiers.Hot.MaxContentChars,
                 reindexProgress: reindexProgress,
-                querySource: querySource);
+                querySource: querySource,
+                retrievalProjectScoping: ResolveRetrievalProjectScoping(cfg),
+                defaultStoreScope: ResolveDefaultStoreScope(cfg),
+                effectiveProjectResolver: new EffectiveProjectResolver(),
+                explicitProjectOverride: ResolveExplicitProject(cfg));
 
             registry.Register(new UsageStatusHandler(usageQuery));
 
@@ -882,4 +904,44 @@ public static class ServerComposition
         FSharpOption<Core.Config.PinnedTierConfig>.get_IsSome(cfg.Tiers.Pinned)
             ? cfg.Tiers.Pinned.Value.ProjectScoping
             : true;
+
+    /// <summary>
+    /// Resolves <c>[retrieval] project_scoping</c> ("off" default | "strict").
+    /// Absent section → "off" (retrieval-side scoping disabled = legacy behavior).
+    /// </summary>
+    private static string ResolveRetrievalProjectScoping(Core.Config.TotalRecallConfig cfg)
+    {
+        if (FSharpOption<Core.Config.RetrievalConfig>.get_IsSome(cfg.Retrieval)
+            && FSharpOption<string>.get_IsSome(cfg.Retrieval.Value.ProjectScoping))
+            return cfg.Retrieval.Value.ProjectScoping.Value;
+        return "off";
+    }
+
+    /// <summary>
+    /// Resolves <c>[retrieval] default_store_scope</c> ("global" default | "project").
+    /// Absent → "global" (memory_store defaults to general/cross-project = legacy).
+    /// </summary>
+    private static string ResolveDefaultStoreScope(Core.Config.TotalRecallConfig cfg)
+    {
+        if (FSharpOption<Core.Config.RetrievalConfig>.get_IsSome(cfg.Retrieval)
+            && FSharpOption<string>.get_IsSome(cfg.Retrieval.Value.DefaultStoreScope))
+            return cfg.Retrieval.Value.DefaultStoreScope.Value;
+        return "global";
+    }
+
+    /// <summary>
+    /// Resolves the explicit project override from <c>[retrieval] project</c>
+    /// (the <c>TOTAL_RECALL_PROJECT</c> env var is already folded into this
+    /// value by <see cref="ConfigLoader"/>). Null when unset/empty.
+    /// </summary>
+    private static string? ResolveExplicitProject(Core.Config.TotalRecallConfig cfg)
+    {
+        if (FSharpOption<Core.Config.RetrievalConfig>.get_IsSome(cfg.Retrieval)
+            && FSharpOption<string>.get_IsSome(cfg.Retrieval.Value.Project))
+        {
+            var p = cfg.Retrieval.Value.Project.Value;
+            return string.IsNullOrWhiteSpace(p) ? null : p;
+        }
+        return null;
+    }
 }

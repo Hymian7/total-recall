@@ -125,6 +125,32 @@ public static class ConfigJsonSerializer
             sb.Append('}');
         }
 
+        // retrieval (optional). Emitted only when present and only for keys
+        // that are set, so snapshots taken before this field existed stay
+        // byte-identical for ConfigSnapshotStore dedup.
+        if (Microsoft.FSharp.Core.FSharpOption<Core.Config.RetrievalConfig>.get_IsSome(config.Retrieval))
+        {
+            var r = config.Retrieval.Value;
+            sb.Append(",\"retrieval\":{");
+            bool firstRt = true;
+            if (Microsoft.FSharp.Core.FSharpOption<string>.get_IsSome(r.ProjectScoping))
+            {
+                AppendString(sb, "project_scoping", r.ProjectScoping.Value);
+                firstRt = false;
+            }
+            if (Microsoft.FSharp.Core.FSharpOption<string>.get_IsSome(r.Project))
+            {
+                if (!firstRt) sb.Append(','); firstRt = false;
+                AppendString(sb, "project", r.Project.Value);
+            }
+            if (Microsoft.FSharp.Core.FSharpOption<string>.get_IsSome(r.DefaultStoreScope))
+            {
+                if (!firstRt) sb.Append(',');
+                AppendString(sb, "default_store_scope", r.DefaultStoreScope.Value);
+            }
+            sb.Append('}');
+        }
+
         sb.Append('}');
         return sb.ToString();
     }

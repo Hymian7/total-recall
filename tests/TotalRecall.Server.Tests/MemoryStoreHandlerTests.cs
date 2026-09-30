@@ -440,4 +440,102 @@ public class MemoryStoreHandlerTests
         Assert.Equal(ContentType.Knowledge, call.Type);
         Assert.True(store.IsSticky(ContentType.Knowledge, "pk-1"));
     }
+
+    // ---------------- memoryScope routing (Mandantentrennung) ----------------
+
+    private static (MemoryStoreHandler handler, FakeStore store) MakeScopeHandler(
+        string defaultStoreScope,
+        string? explicitOverride = null)
+    {
+        var store = new FakeStore { NextInsertId = "e-scope" };
+        var embedder = new RecordingFakeEmbedder();
+        var vector = new FakeVectorSearch();
+        var handler = new MemoryStoreHandler(
+            store, embedder, vector,
+            defaultStoreScope: defaultStoreScope,
+            effectiveProjectResolver: new TotalRecall.Infrastructure.Memory.EffectiveProjectResolver(),
+            explicitProjectOverride: explicitOverride);
+        return (handler, store);
+    }
+
+    [Fact]
+    public async Task Store_MemoryScopeGlobal_ProjectIsNull()
+    {
+        var (handler, store) = MakeScopeHandler(defaultStoreScope: "project", explicitOverride: "acme/x");
+        await handler.ExecuteAsync(
+            ParseArgs("""{"content":"hi","memoryScope":"global"}"""), CancellationToken.None);
+
+        var call = Assert.Single(store.InsertWithEmbeddingCalls);
+        Assert.Null(call.Opts.Project);
+    }
+
+    [Fact]
+    public async Task Store_MemoryScopeProject_TagsEffectiveProject()
+    {
+        var (handler, store) = MakeScopeHandler(defaultStoreScope: "global", explicitOverride: "acme/widgets");
+        await handler.ExecuteAsync(
+            ParseArgs("""{"content":"hi","memoryScope":"project"}"""), CancellationToken.None);
+
+        var call = Assert.Single(store.InsertWithEmbeddingCalls);
+        Assert.Equal("acme/widgets", call.Opts.Project);
+    }
+
+    [Fact]
+    public async Task Store_MemoryScopeExplicitName_TagsThatLiteral()
+    {
+        var (handler, store) = MakeScopeHandler(defaultStoreScope: "global");
+        await handler.ExecuteAsync(
+            ParseArgs("""{"content":"hi","memoryScope":"team/other"}"""), CancellationToken.None);
+
+        var call = Assert.Single(store.InsertWithEmbeddingCalls);
+        Assert.Equal("team/other", call.Opts.Project);
+    }
+
+    [Fact]
+    public async Task Store_NoMemoryScope_DefaultGlobal_ProjectIsNull()
+    {
+        var (handler, store) = MakeScopeHandler(defaultStoreScope: "global", explicitOverride: "acme/x");
+        await handler.ExecuteAsync(
+            ParseArgs("""{"content":"hi"}"""), CancellationToken.None);
+
+        var call = Assert.Single(store.InsertWithEmbeddingCalls);
+        Assert.Null(call.Opts.Project);
+    }
+
+    [Fact]
+    public async Task Store_NoMemoryScope_DefaultProject_TagsEffectiveProject()
+    {
+        var (handler, store) = MakeScopeHandler(defaultStoreScope: "project", explicitOverride: "acme/widgets");
+        await handler.ExecuteAsync(
+            ParseArgs("""{"content":"hi"}"""), CancellationToken.None);
+
+        var call = Assert.Single(store.InsertWithEmbeddingCalls);
+        Assert.Equal("acme/widgets", call.Opts.Project);
+    }
+
+    [Fact]
+    public async Task Store_ExplicitProjectArg_WinsOverMemoryScope()
+    {
+        // The legacy `project` arg must be preserved and take precedence.
+        var (handler, store) = MakeScopeHandler(defaultStoreScope: "project", explicitOverride: "acme/widgets");
+        await handler.ExecuteAsync(
+            ParseArgs("""{"content":"hi","project":"legacy/proj","memoryScope":"global"}"""),
+            CancellationToken.None);
+
+        var call = Assert.Single(store.InsertWithEmbeddingCalls);
+        Assert.Equal("legacy/proj", call.Opts.Project);
+    }
+
+    [Fact]
+    public async Task Store_DefaultHandler_NoScope_ProjectIsNull_BackwardsCompatible()
+    {
+        // The default ctor (no scoping wired) must behave exactly as before:
+        // no project unless the legacy `project` arg is supplied.
+        var (handler, store, _, _) = MakeHandler("bc-1");
+        await handler.ExecuteAsync(
+            ParseArgs("""{"content":"hi"}"""), CancellationToken.None);
+
+        var call = Assert.Single(store.InsertWithEmbeddingCalls);
+        Assert.Null(call.Opts.Project);
+    }
 }

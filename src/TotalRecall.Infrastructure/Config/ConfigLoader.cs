@@ -515,6 +515,38 @@ public sealed class ConfigLoader : IConfigLoader
             toolCache = FSharpOption<Core.Config.ToolCacheConfig>.None;
         }
 
+        // [retrieval] — optional (Mandantentrennung). Parsed like the other
+        // optional sections. The TOTAL_RECALL_PROJECT env var, when non-empty,
+        // overrides Retrieval.Project. When the env var is set but no
+        // [retrieval] table exists, we still surface a RetrievalConfig so the
+        // override is honored.
+        FSharpOption<Core.Config.RetrievalConfig> retrieval;
+        var hasRetrievalTable = table.TryGetValue("retrieval", out var retrievalObj)
+            && retrievalObj is TomlTable;
+        var envProject = Environment.GetEnvironmentVariable("TOTAL_RECALL_PROJECT");
+        var hasEnvProject = !string.IsNullOrEmpty(envProject);
+        if (hasRetrievalTable || hasEnvProject)
+        {
+            var retrievalTable = hasRetrievalTable ? (TomlTable)retrievalObj! : new TomlTable();
+            var projectScoping = TryGetString(retrievalTable, "project_scoping");
+            var project = TryGetString(retrievalTable, "project");
+            var defaultStoreScope = TryGetString(retrievalTable, "default_store_scope");
+
+            // Env override wins over the config value when non-empty.
+            if (hasEnvProject)
+                project = FSharpOption<string>.Some(envProject!);
+
+            var retrievalCfg = new Core.Config.RetrievalConfig(
+                projectScoping,
+                project,
+                defaultStoreScope);
+            retrieval = FSharpOption<Core.Config.RetrievalConfig>.Some(retrievalCfg);
+        }
+        else
+        {
+            retrieval = FSharpOption<Core.Config.RetrievalConfig>.None;
+        }
+
         return new Core.Config.TotalRecallConfig(
             tiersCfg,
             compactionCfg,
@@ -526,7 +558,8 @@ public sealed class ConfigLoader : IConfigLoader
             cortex,
             scope,
             skill,
-            toolCache);
+            toolCache,
+            retrieval);
     }
 
     // --- walker helpers ---------------------------------------------------

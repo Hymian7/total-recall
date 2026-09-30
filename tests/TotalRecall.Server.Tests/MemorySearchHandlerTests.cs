@@ -560,4 +560,89 @@ public class MemorySearchHandlerTests
                 Args("""{"query":"x","tiers":["pinned"]}"""),
                 CancellationToken.None));
     }
+
+    // ---------------- project scoping (Mandantentrennung) ----------------
+
+    [Fact]
+    public async Task Search_ExplicitProjectArg_PassedToOpts()
+    {
+        var (handler, _, hybrid) = NewFixture();
+
+        await handler.ExecuteAsync(
+            Args("""{"query":"x","project":"acme/widgets"}"""),
+            CancellationToken.None);
+
+        Assert.Equal("acme/widgets", hybrid.Calls[0].Opts.Project);
+        Assert.True(hybrid.Calls[0].Opts.IncludeGlobal);
+    }
+
+    [Fact]
+    public async Task Search_NoProjectArg_ScopingOff_ProjectIsNull()
+    {
+        // Default handler (no projectScoping wired) → no project filter.
+        var (handler, _, hybrid) = NewFixture();
+
+        await handler.ExecuteAsync(
+            Args("""{"query":"x"}"""),
+            CancellationToken.None);
+
+        Assert.Null(hybrid.Calls[0].Opts.Project);
+    }
+
+    [Fact]
+    public async Task Search_StrictScoping_NoArg_UsesExplicitOverride()
+    {
+        var embed = new RecordingFakeEmbedder();
+        var hybrid = new RecordingFakeHybridSearch();
+        var handler = new MemorySearchHandler(
+            embed, hybrid,
+            projectScoping: "strict",
+            effectiveProjectResolver: new TotalRecall.Infrastructure.Memory.EffectiveProjectResolver(),
+            explicitProjectOverride: "acme/from-config",
+            cwdProvider: () => Environment.CurrentDirectory);
+
+        await handler.ExecuteAsync(
+            Args("""{"query":"x"}"""),
+            CancellationToken.None);
+
+        // Strict + no arg → effective project (explicit override wins over cwd).
+        Assert.Equal("acme/from-config", hybrid.Calls[0].Opts.Project);
+    }
+
+    [Fact]
+    public async Task Search_StrictScoping_ExplicitArg_WinsOverConfig()
+    {
+        var embed = new RecordingFakeEmbedder();
+        var hybrid = new RecordingFakeHybridSearch();
+        var handler = new MemorySearchHandler(
+            embed, hybrid,
+            projectScoping: "strict",
+            effectiveProjectResolver: new TotalRecall.Infrastructure.Memory.EffectiveProjectResolver(),
+            explicitProjectOverride: "acme/from-config");
+
+        await handler.ExecuteAsync(
+            Args("""{"query":"x","project":"acme/call-arg"}"""),
+            CancellationToken.None);
+
+        Assert.Equal("acme/call-arg", hybrid.Calls[0].Opts.Project);
+    }
+
+    [Fact]
+    public async Task Search_OffScoping_NoArg_IgnoresOverride()
+    {
+        var embed = new RecordingFakeEmbedder();
+        var hybrid = new RecordingFakeHybridSearch();
+        var handler = new MemorySearchHandler(
+            embed, hybrid,
+            projectScoping: "off",
+            effectiveProjectResolver: new TotalRecall.Infrastructure.Memory.EffectiveProjectResolver(),
+            explicitProjectOverride: "acme/should-be-ignored");
+
+        await handler.ExecuteAsync(
+            Args("""{"query":"x"}"""),
+            CancellationToken.None);
+
+        // Off → no filter, even with an override configured.
+        Assert.Null(hybrid.Calls[0].Opts.Project);
+    }
 }

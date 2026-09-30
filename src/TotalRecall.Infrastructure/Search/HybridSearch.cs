@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.FSharp.Core;
 using TotalRecall.Core;
 using TotalRecall.Infrastructure.Storage;
 
@@ -22,7 +23,9 @@ public sealed record HybridSearchOpts(
     int TopK,
     double? MinScore = null,
     double? FtsWeight = null,
-    IReadOnlyList<string>? Scopes = null);
+    IReadOnlyList<string>? Scopes = null,
+    string? Project = null,
+    bool IncludeGlobal = true);
 
 /// <summary>
 /// Orchestration layer that fuses vector and FTS5 search across one or more
@@ -189,6 +192,24 @@ public sealed class HybridSearch : IHybridSearch
             // Post-filter by scope when the caller supplied a scopes list.
             if (scopeSet is not null && !scopeSet.Contains(entry.Scope))
                 continue;
+
+            // Post-filter by project (Mandantentrennung). Mirrors the scope
+            // post-filter above. Keep the entry iff:
+            //   - opts.Project is null (no project filter active), OR
+            //   - the entry's project == opts.Project, OR
+            //   - IncludeGlobal && the entry has no project (global memory).
+            // Entry.Project is an F# string option, so a "no project" entry is
+            // FSharpOption.None; a set project is Some(value).
+            if (opts.Project is not null)
+            {
+                var entryHasProject = FSharpOption<string>.get_IsSome(entry.Project);
+                var entryProject = entryHasProject ? entry.Project.Value : null;
+                var keep =
+                    (entryHasProject && string.Equals(entryProject, opts.Project, StringComparison.Ordinal))
+                    || (!entryHasProject && opts.IncludeGlobal);
+                if (!keep)
+                    continue;
+            }
 
             _store.Update(
                 c.Tier,

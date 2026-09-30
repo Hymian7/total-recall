@@ -71,6 +71,7 @@ public sealed class MemoryStoreHandler : IToolHandler
             "contentType": {"type":"string","enum":["memory","knowledge"],"description":"Content type (default: memory)"},
             "entryType":   {"type":"string","enum":["correction","preference","decision","surfaced","imported","compacted","ingested"],"description":"Entry type"},
             "project":     {"type":"string","description":"Project scope"},
+            "memoryScope": {"type":"string","description":"Per-memory project routing: 'project' tags this memory to the resolved current project; 'global' stores it as a general (cross-project) memory; any other non-empty value tags that literal project. Omitted uses the configured default_store_scope (global)."},
             "tags":        {"type":["array","string"],"items":{"type":"string"},"description":"Tags (array, JSON-encoded array string, or comma-separated string)"},
             "source":      {"type":"string","description":"Source identifier"},
             "visibility":  {"type":"string","enum":["private","team","public"],"description":"Entry visibility: 'private' (default), 'team', or 'public'"},
@@ -106,6 +107,16 @@ public sealed class MemoryStoreHandler : IToolHandler
     private readonly string? _scopeDefault;
     private readonly int _pinnedMaxContentChars;
     private readonly int _hotMaxContentChars;
+    // Per-memory project routing (Mandantentrennung). _defaultStoreScope is
+    // "global" (default) or "project", used when the `memoryScope` arg is
+    // omitted. The effective-project resolver + explicit override + cwd
+    // provider resolve "project" → the current project slug. All null →
+    // behavior identical to before (memories stored global unless `project`
+    // arg is supplied).
+    private readonly string _defaultStoreScope;
+    private readonly EffectiveProjectResolver? _effectiveProjectResolver;
+    private readonly string? _explicitProjectOverride;
+    private readonly Func<string> _cwdProvider;
 
     public MemoryStoreHandler(
         IStore store,
@@ -113,7 +124,11 @@ public sealed class MemoryStoreHandler : IToolHandler
         IVectorSearch vectorSearch,
         string? scopeDefault = null,
         int pinnedMaxContentChars = PinnedTierLimits.DefaultMaxContentChars,
-        int hotMaxContentChars = DefaultHotMaxContentChars)
+        int hotMaxContentChars = DefaultHotMaxContentChars,
+        string? defaultStoreScope = null,
+        EffectiveProjectResolver? effectiveProjectResolver = null,
+        string? explicitProjectOverride = null,
+        Func<string>? cwdProvider = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _embedder = embedder ?? throw new ArgumentNullException(nameof(embedder));
@@ -121,6 +136,10 @@ public sealed class MemoryStoreHandler : IToolHandler
         _scopeDefault = scopeDefault;
         _pinnedMaxContentChars = pinnedMaxContentChars;
         _hotMaxContentChars = hotMaxContentChars;
+        _defaultStoreScope = string.IsNullOrWhiteSpace(defaultStoreScope) ? "global" : defaultStoreScope!.Trim();
+        _effectiveProjectResolver = effectiveProjectResolver;
+        _explicitProjectOverride = explicitProjectOverride;
+        _cwdProvider = cwdProvider ?? (() => Environment.CurrentDirectory);
     }
 
     public string Name => "memory_store";
@@ -161,6 +180,23 @@ public sealed class MemoryStoreHandler : IToolHandler
         var contentType = ReadContentType(args);
         var entryType = ReadEntryType(args);
         var project = ReadOptionalString(args, "project");
+
+        // Per-memory project routing (Mandantentrennung). The explicit
+        // `project` arg (legacy) WINS and is left untouched — preserving the
+        // pre-existing behavior. Only when no explicit `project` is supplied
+        // does `memoryScope` (or the configured default_store_scope) decide:
+        //   "global"        → null (general, cross-project memory)
+        //   "project"       → the resolved effective project (or null if none)
+        //   <explicit-name> → that literal value
+        //   omitted         → default_store_scope ("global" | "project")
+        if (project is null)
+        {
+            var memoryScope = ReadOptionalString(args, "memoryScope");
+            var effective = string.IsNullOrWhiteSpace(memoryScope)
+                ? _defaultStoreScope
+                : memoryScope!.Trim();
+            project = ResolveStoreProject(effective);
+        }
         var source = ReadOptionalString(args, "source");
         var tags = ReadTags(args);
         var visibility = ReadVisibility(args);
@@ -249,6 +285,23 @@ public sealed class MemoryStoreHandler : IToolHandler
     {
         _store.SetSticky(contentType, id, true);
         _store.Update(Tier.Hot, contentType, id, new UpdateEntryOpts { DecayScore = 1.0 });
+    }
+
+    // Maps a resolved store-scope token to the project column value:
+    //   "global" → null (general memory)
+    //   "project" → the effective project slug (explicit override → git
+    //               auto-detect → null when none can be resolved)
+    //   anything else (a non-empty literal) → that literal project name
+    private string? ResolveStoreProject(string storeScope)
+    {
+        if (string.Equals(storeScope, "global", StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (string.Equals(storeScope, "project", StringComparison.OrdinalIgnoreCase))
+        {
+            return _effectiveProjectResolver?.Resolve(_explicitProjectOverride, _cwdProvider());
+        }
+        // A literal, explicit project name.
+        return storeScope;
     }
 
     // ---------- argument parsing helpers ----------

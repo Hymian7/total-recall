@@ -30,6 +30,11 @@ When you detect corrections, preferences, or non-obvious decisions in user messa
 - Preference (how the user wants things done) → type `preference`
 - Decision (non-obvious architectural or design choice) → type `decision`
 
+Choose the memory's project scope with `memory_store`'s `memoryScope` param:
+- Project-specific corrections/decisions (a fix, a build quirk, a design choice for *this* repo) → `memoryScope: "project"`.
+- Durable cross-project preferences (how the user likes things done everywhere) → `memoryScope: "global"`.
+- Omit it to accept the configured `default_store_scope` (global unless set otherwise).
+
 ### Retrieve (continuous)
 On each user message that is a question or task request:
 1. Call `memory_search` with the message, searching warm tier

@@ -155,6 +155,27 @@ public sealed class HybridSearchTests
         foreach (var id in ids) s.Entries[id] = MakeEntry(id);
     }
 
+    /// <summary>Entry with an explicit project (FSharp Some) for scoping tests.</summary>
+    private static Entry MakeEntryWithProject(string id, string? project) =>
+        new(
+            id,
+            "c",
+            FSharpOption<string>.None,
+            FSharpOption<string>.None,
+            FSharpOption<SourceTool>.None,
+            project is null ? FSharpOption<string>.None : FSharpOption<string>.Some(project),
+            ListModule.Empty<string>(),
+            0L,
+            0L,
+            0L,
+            0,
+            1.0,
+            FSharpOption<string>.None,
+            FSharpOption<string>.None,
+            "",
+            EntryType.Preference,
+            "{}", 0);
+
     // --- tests ------------------------------------------------------------
 
     [Fact]
@@ -398,5 +419,81 @@ public sealed class HybridSearchTests
         Assert.Equal(0.4, v.CapturedOpts[0].MinScore);
         // FTS must NOT receive any minScore (FtsSearchOpts has no such field).
         Assert.Single(f.CapturedOpts);
+    }
+
+    // --- project scoping (Mandantentrennung) post-filter ------------------
+
+    [Fact]
+    public void Search_ProjectNull_NoFilter_ReturnsAllProjects()
+    {
+        var (hs, v, _, s) = NewFixture();
+        s.Entries["p1"] = MakeEntryWithProject("p1", "o/r");
+        s.Entries["p2"] = MakeEntryWithProject("p2", "o/x");
+        s.Entries["g1"] = MakeEntryWithProject("g1", null);
+        v.ByTier[(Tier.Hot, ContentType.Memory)] = new()
+        {
+            new("p1", 0.9), new("p2", 0.8), new("g1", 0.7),
+        };
+
+        // Project == null → no project filter at all.
+        var results = hs.Search(HotMem, "q", DummyEmbedding,
+            new HybridSearchOpts(TopK: 5, Project: null));
+
+        Assert.Equal(3, results.Count);
+    }
+
+    [Fact]
+    public void Search_ProjectWithIncludeGlobal_KeepsProjectAndGlobalOnly()
+    {
+        var (hs, v, _, s) = NewFixture();
+        s.Entries["p1"] = MakeEntryWithProject("p1", "o/r");   // matches
+        s.Entries["p2"] = MakeEntryWithProject("p2", "o/x");   // other project → dropped
+        s.Entries["g1"] = MakeEntryWithProject("g1", null);    // global → kept
+        v.ByTier[(Tier.Hot, ContentType.Memory)] = new()
+        {
+            new("p1", 0.9), new("p2", 0.8), new("g1", 0.7),
+        };
+
+        var results = hs.Search(HotMem, "q", DummyEmbedding,
+            new HybridSearchOpts(TopK: 5, Project: "o/r", IncludeGlobal: true));
+
+        var ids = results.Select(r => r.Entry.Id).ToHashSet();
+        Assert.Equal(2, ids.Count);
+        Assert.Contains("p1", ids);
+        Assert.Contains("g1", ids);
+        Assert.DoesNotContain("p2", ids);
+    }
+
+    [Fact]
+    public void Search_ProjectWithoutIncludeGlobal_KeepsProjectOnly()
+    {
+        var (hs, v, _, s) = NewFixture();
+        s.Entries["p1"] = MakeEntryWithProject("p1", "o/r");   // matches
+        s.Entries["g1"] = MakeEntryWithProject("g1", null);    // global → dropped
+        v.ByTier[(Tier.Hot, ContentType.Memory)] = new()
+        {
+            new("p1", 0.9), new("g1", 0.7),
+        };
+
+        var results = hs.Search(HotMem, "q", DummyEmbedding,
+            new HybridSearchOpts(TopK: 5, Project: "o/r", IncludeGlobal: false));
+
+        var ids = results.Select(r => r.Entry.Id).ToHashSet();
+        Assert.Single(ids);
+        Assert.Contains("p1", ids);
+        Assert.DoesNotContain("g1", ids);
+    }
+
+    [Fact]
+    public void Search_ProjectFilter_ExcludesForeignProjectEntirely()
+    {
+        var (hs, v, _, s) = NewFixture();
+        s.Entries["p2"] = MakeEntryWithProject("p2", "o/x");   // only a foreign-project hit
+        v.ByTier[(Tier.Hot, ContentType.Memory)] = new() { new("p2", 0.9) };
+
+        var results = hs.Search(HotMem, "q", DummyEmbedding,
+            new HybridSearchOpts(TopK: 5, Project: "o/r", IncludeGlobal: true));
+
+        Assert.Empty(results);
     }
 }

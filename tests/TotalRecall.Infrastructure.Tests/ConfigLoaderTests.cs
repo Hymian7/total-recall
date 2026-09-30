@@ -30,10 +30,12 @@ public sealed class ConfigLoaderTests : IDisposable
     {
         Environment.SetEnvironmentVariable("TOTAL_RECALL_HOME", _originalHome);
         Environment.SetEnvironmentVariable("TOTAL_RECALL_DB_PATH", _originalDbPath);
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_PROJECT", _originalProject);
         try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
     }
 
     private readonly string? _originalDbPath = Environment.GetEnvironmentVariable("TOTAL_RECALL_DB_PATH");
+    private readonly string? _originalProject = Environment.GetEnvironmentVariable("TOTAL_RECALL_PROJECT");
 
     // --- LoadDefaults -----------------------------------------------------
 
@@ -601,6 +603,97 @@ public sealed class ConfigLoaderTests : IDisposable
             .get_IsSome(cfg.ToolCache));
         Assert.Equal(200, cfg.ToolCache.Value.MaxEntries);
         Assert.Equal(600, cfg.ToolCache.Value.DefaultTtlSeconds);
+    }
+
+    // --- [retrieval] section tests (Mandantentrennung) --------------------
+
+    [Fact]
+    public void LoadDefaults_NoRetrievalSection_RetrievalIsNone()
+    {
+        // defaults.toml intentionally ships NO [retrieval] section — the
+        // feature must be fully off by default (backwards-compatible).
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_PROJECT", null);
+        var cfg = new ConfigLoader().LoadDefaults();
+        Assert.True(Microsoft.FSharp.Core.FSharpOption<TotalRecall.Core.Config.RetrievalConfig>
+            .get_IsNone(cfg.Retrieval));
+    }
+
+    [Fact]
+    public void LoadEffectiveConfig_RetrievalSection_ParsesAllKeys()
+    {
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_PROJECT", null);
+        var cfgPath = Path.Combine(_tempDir, "config.toml");
+        File.WriteAllText(cfgPath, """
+            [retrieval]
+            project_scoping = "strict"
+            project = "acme/widgets"
+            default_store_scope = "project"
+            """);
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_HOME", _tempDir);
+
+        var cfg = new ConfigLoader().LoadEffectiveConfig(cfgPath);
+
+        Assert.True(Microsoft.FSharp.Core.FSharpOption<TotalRecall.Core.Config.RetrievalConfig>
+            .get_IsSome(cfg.Retrieval));
+        var r = cfg.Retrieval.Value;
+        Assert.Equal("strict", r.ProjectScoping.Value);
+        Assert.Equal("acme/widgets", r.Project.Value);
+        Assert.Equal("project", r.DefaultStoreScope.Value);
+    }
+
+    [Fact]
+    public void LoadEffectiveConfig_EnvProject_OverridesConfigProject()
+    {
+        var cfgPath = Path.Combine(_tempDir, "config.toml");
+        File.WriteAllText(cfgPath, """
+            [retrieval]
+            project_scoping = "strict"
+            project = "from-config"
+            """);
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_HOME", _tempDir);
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_PROJECT", "from-env");
+
+        var cfg = new ConfigLoader().LoadEffectiveConfig(cfgPath);
+
+        // Env override wins; other keys still come from config.
+        Assert.Equal("from-env", cfg.Retrieval.Value.Project.Value);
+        Assert.Equal("strict", cfg.Retrieval.Value.ProjectScoping.Value);
+    }
+
+    [Fact]
+    public void LoadEffectiveConfig_EnvProject_SurfacesRetrieval_WhenNoSection()
+    {
+        // No [retrieval] table at all, but TOTAL_RECALL_PROJECT set → a
+        // RetrievalConfig is still surfaced carrying the override.
+        var cfgPath = Path.Combine(_tempDir, "config.toml");
+        File.WriteAllText(cfgPath, "# no retrieval section\n");
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_HOME", _tempDir);
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_PROJECT", "env-only");
+
+        var cfg = new ConfigLoader().LoadEffectiveConfig(cfgPath);
+
+        Assert.True(Microsoft.FSharp.Core.FSharpOption<TotalRecall.Core.Config.RetrievalConfig>
+            .get_IsSome(cfg.Retrieval));
+        Assert.Equal("env-only", cfg.Retrieval.Value.Project.Value);
+        Assert.True(Microsoft.FSharp.Core.FSharpOption<string>
+            .get_IsNone(cfg.Retrieval.Value.ProjectScoping));
+    }
+
+    [Fact]
+    public void LoadEffectiveConfig_EmptyEnvProject_DoesNotOverride()
+    {
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_PROJECT", "");
+        var cfgPath = Path.Combine(_tempDir, "config.toml");
+        File.WriteAllText(cfgPath, """
+            [retrieval]
+            project = "from-config"
+            """);
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_HOME", _tempDir);
+
+        var cfg = new ConfigLoader().LoadEffectiveConfig(cfgPath);
+
+        // Empty env var is treated as unset → config value stands.
+        Assert.Equal("from-config", cfg.Retrieval.Value.Project.Value);
     }
 
     // --- [tiers.pinned] floor config tests --------------------------------

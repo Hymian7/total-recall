@@ -102,6 +102,23 @@ type ScopeConfig = {
     Default: string option
 }
 
+/// Retrieval-side project scoping (Mandantentrennung). All fields optional so
+/// the whole [retrieval] section can be absent — when it is, behavior is
+/// identical to before this feature existed (scoping off, no override,
+/// store scope defaults to global).
+type RetrievalConfig = {
+    /// "off" (default) — no project filter on memory_search.
+    /// "strict" — memory_search is filtered to the effective project + globals.
+    ProjectScoping: string option
+    /// Explicit project override. When non-empty, WINS over git auto-detect.
+    /// Also settable via the TOTAL_RECALL_PROJECT env var (non-empty overrides).
+    Project: string option
+    /// Default scope tag for memory_store when the `scope` arg is omitted.
+    /// "global" (default) — store as a general (project-null) memory.
+    /// "project" — tag the store with the resolved effective project.
+    DefaultStoreScope: string option
+}
+
 type SkillConfig = {
     ExtraDirs: string [] option
     /// Whether locally-scanned host-tool skills get uploaded to Cortex
@@ -128,6 +145,7 @@ type TotalRecallConfig = {
     Scope: ScopeConfig option
     Skill: SkillConfig option
     ToolCache: ToolCacheConfig option
+    Retrieval: RetrievalConfig option
 }
 
 // --- pure helpers (mirrors src-ts/config.ts isSafeKey + deepMerge + setNestedKey) ---

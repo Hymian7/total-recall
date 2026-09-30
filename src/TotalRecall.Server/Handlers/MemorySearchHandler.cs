@@ -65,7 +65,8 @@ public sealed class MemorySearchHandler : IToolHandler
             "minScore":     {"type":"number","description":"Minimum similarity score (0-1)"},
             "tiers":        {"type":"array","items":{"type":"string","enum":["hot","warm","cold"]},"description":"Tiers to search (default: all)"},
             "contentTypes": {"type":"array","items":{"type":"string","enum":["memory","knowledge"]},"description":"Content types to search (default: all)"},
-            "scopes":       {"type":"array","items":{"type":"string"},"description":"Scope(s) to search. Defaults to configured default scope. Pass multiple to broaden (e.g. [\"user:paul\",\"global:jira\"])."}
+            "scopes":       {"type":"array","items":{"type":"string"},"description":"Scope(s) to search. Defaults to configured default scope. Pass multiple to broaden (e.g. [\"user:paul\",\"global:jira\"])."},
+            "project":      {"type":"string","description":"Restrict results to this project (plus global/general memories). Overrides configured project scoping for this call."}
           },
           "required": ["query"]
         }
@@ -77,6 +78,15 @@ public sealed class MemorySearchHandler : IToolHandler
     private readonly RetrievalEventLog? _retrievalLog;
     private readonly SyncQueue? _syncQueue;
     private readonly string _querySource;
+    // Project scoping (Mandantentrennung). _projectScoping is "off" (default)
+    // or "strict". When strict, and the caller passes no explicit `project`
+    // arg, the effective project (explicit config/env override → git
+    // auto-detect → null) is applied as a search-time filter. All null/"off"
+    // → no filter → behavior identical to before this feature.
+    private readonly string _projectScoping;
+    private readonly EffectiveProjectResolver? _effectiveProjectResolver;
+    private readonly string? _explicitProjectOverride;
+    private readonly Func<string> _cwdProvider;
 
     public MemorySearchHandler(
         IEmbedder embedder,
@@ -84,7 +94,11 @@ public sealed class MemorySearchHandler : IToolHandler
         string? scopeDefault = null,
         RetrievalEventLog? retrievalLog = null,
         SyncQueue? syncQueue = null,
-        string querySource = "assistant")
+        string querySource = "assistant",
+        string? projectScoping = null,
+        EffectiveProjectResolver? effectiveProjectResolver = null,
+        string? explicitProjectOverride = null,
+        Func<string>? cwdProvider = null)
     {
         _embedder = embedder ?? throw new ArgumentNullException(nameof(embedder));
         _hybridSearch = hybridSearch ?? throw new ArgumentNullException(nameof(hybridSearch));
@@ -92,6 +106,10 @@ public sealed class MemorySearchHandler : IToolHandler
         _retrievalLog = retrievalLog;
         _syncQueue = syncQueue;
         _querySource = querySource;
+        _projectScoping = string.IsNullOrWhiteSpace(projectScoping) ? "off" : projectScoping!.Trim();
+        _effectiveProjectResolver = effectiveProjectResolver;
+        _explicitProjectOverride = explicitProjectOverride;
+        _cwdProvider = cwdProvider ?? (() => Environment.CurrentDirectory);
     }
 
     public string Name => "memory_search";
@@ -132,6 +150,22 @@ public sealed class MemorySearchHandler : IToolHandler
         var tierFilter = ReadStringArray(args, "tiers");
         var typeFilter = ReadStringArray(args, "contentTypes");
 
+        // Project filter (Mandantentrennung). Precedence:
+        //   1. explicit `project` arg on this call (wins, always);
+        //   2. else, if project_scoping == "strict", the effective project
+        //      (explicit config/env override → git auto-detect → null);
+        //   3. else null (no filter — behavior identical to before).
+        // A null result means "no project post-filter" in HybridSearch.
+        string? projectFilter = ReadOptionalString(args, "project");
+        if (projectFilter is not null && projectFilter.Length == 0)
+            projectFilter = null;
+        if (projectFilter is null
+            && string.Equals(_projectScoping, "strict", StringComparison.Ordinal)
+            && _effectiveProjectResolver is not null)
+        {
+            projectFilter = _effectiveProjectResolver.Resolve(_explicitProjectOverride, _cwdProvider());
+        }
+
         // Validate filter strings and convert to Tier / ContentType sets.
         HashSet<Tier>? tierSet = null;
         if (tierFilter is not null)
@@ -168,7 +202,9 @@ public sealed class MemorySearchHandler : IToolHandler
             TopK: topK,
             MinScore: minScore,
             FtsWeight: null,
-            Scopes: scopes);
+            Scopes: scopes,
+            Project: projectFilter,
+            IncludeGlobal: true);
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var results = _hybridSearch.Search(tiers, query, vector, opts);
@@ -256,6 +292,15 @@ public sealed class MemorySearchHandler : IToolHandler
         if (prop.ValueKind != JsonValueKind.String)
             throw new ArgumentException($"{name} must be a string");
         return prop.GetString() ?? throw new ArgumentException($"{name} must be a string");
+    }
+
+    private static string? ReadOptionalString(JsonElement args, string name)
+    {
+        if (!args.TryGetProperty(name, out var prop)) return null;
+        if (prop.ValueKind == JsonValueKind.Null) return null;
+        if (prop.ValueKind != JsonValueKind.String)
+            throw new ArgumentException($"{name} must be a string");
+        return prop.GetString();
     }
 
     // Mirrors TS validateOptionalNumber in src-ts/tools/validation.ts. Two
