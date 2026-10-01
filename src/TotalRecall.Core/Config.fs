@@ -117,6 +117,13 @@ type RetrievalConfig = {
     /// "global" (default) — store as a general (project-null) memory.
     /// "project" — tag the store with the resolved effective project.
     DefaultStoreScope: string option
+    /// Folder map: canonical (normalized) directory path -> project slug.
+    /// Both the Kiro IDE (process cwd) and KiroCrew (caller-passed path) are
+    /// resolved through this single map. Absent/empty => None.
+    ProjectMap: Map<string, string> option
+    /// When true, fall back to git auto-detect on the resolution cwd after
+    /// the folder map misses. Absent => None (means false — auto-detect off).
+    ProjectAutodetect: bool option
 }
 
 type SkillConfig = {

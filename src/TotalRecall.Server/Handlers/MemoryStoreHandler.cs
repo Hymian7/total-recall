@@ -71,6 +71,7 @@ public sealed class MemoryStoreHandler : IToolHandler
             "contentType": {"type":"string","enum":["memory","knowledge"],"description":"Content type (default: memory)"},
             "entryType":   {"type":"string","enum":["correction","preference","decision","surfaced","imported","compacted","ingested"],"description":"Entry type"},
             "project":     {"type":"string","description":"Project scope"},
+            "project_path": {"type":"string","description":"Raw directory path to resolve the project from via the configured folder map (KiroCrew passes the per-call [PROJECT] path here). Used only when memoryScope/default_store_scope resolves to 'project' and no explicit project is given; falls back to the process cwd when omitted."},
             "memoryScope": {"type":"string","description":"Per-memory project routing: 'project' tags this memory to the resolved current project; 'global' stores it as a general (cross-project) memory; any other non-empty value tags that literal project. Omitted uses the configured default_store_scope (global)."},
             "tags":        {"type":["array","string"],"items":{"type":"string"},"description":"Tags (array, JSON-encoded array string, or comma-separated string)"},
             "source":      {"type":"string","description":"Source identifier"},
@@ -117,6 +118,11 @@ public sealed class MemoryStoreHandler : IToolHandler
     private readonly EffectiveProjectResolver? _effectiveProjectResolver;
     private readonly string? _explicitProjectOverride;
     private readonly Func<string> _cwdProvider;
+    // Folder map (canonical dir path -> slug) + autodetect flag, threaded into
+    // the resolver so scope:"project" resolution runs through the same map as
+    // retrieval. Null map / false autodetect => legacy behavior.
+    private readonly IReadOnlyDictionary<string, string>? _projectMap;
+    private readonly bool _autodetect;
 
     public MemoryStoreHandler(
         IStore store,
@@ -128,7 +134,9 @@ public sealed class MemoryStoreHandler : IToolHandler
         string? defaultStoreScope = null,
         EffectiveProjectResolver? effectiveProjectResolver = null,
         string? explicitProjectOverride = null,
-        Func<string>? cwdProvider = null)
+        Func<string>? cwdProvider = null,
+        IReadOnlyDictionary<string, string>? projectMap = null,
+        bool autodetect = false)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _embedder = embedder ?? throw new ArgumentNullException(nameof(embedder));
@@ -140,6 +148,8 @@ public sealed class MemoryStoreHandler : IToolHandler
         _effectiveProjectResolver = effectiveProjectResolver;
         _explicitProjectOverride = explicitProjectOverride;
         _cwdProvider = cwdProvider ?? (() => Environment.CurrentDirectory);
+        _projectMap = projectMap;
+        _autodetect = autodetect;
     }
 
     public string Name => "memory_store";
@@ -195,7 +205,8 @@ public sealed class MemoryStoreHandler : IToolHandler
             var effective = string.IsNullOrWhiteSpace(memoryScope)
                 ? _defaultStoreScope
                 : memoryScope!.Trim();
-            project = ResolveStoreProject(effective);
+            var projectPathArg = ReadOptionalString(args, "project_path");
+            project = ResolveStoreProject(effective, projectPathArg);
         }
         var source = ReadOptionalString(args, "source");
         var tags = ReadTags(args);
@@ -292,13 +303,17 @@ public sealed class MemoryStoreHandler : IToolHandler
     //   "project" → the effective project slug (explicit override → git
     //               auto-detect → null when none can be resolved)
     //   anything else (a non-empty literal) → that literal project name
-    private string? ResolveStoreProject(string storeScope)
+    private string? ResolveStoreProject(string storeScope, string? projectPathArg)
     {
         if (string.Equals(storeScope, "global", StringComparison.OrdinalIgnoreCase))
             return null;
         if (string.Equals(storeScope, "project", StringComparison.OrdinalIgnoreCase))
         {
-            return _effectiveProjectResolver?.Resolve(_explicitProjectOverride, _cwdProvider());
+            // KiroCrew passes the raw [PROJECT] path per call in project_path;
+            // fall back to the process cwd when it is absent/empty.
+            var resolveCwd = string.IsNullOrWhiteSpace(projectPathArg) ? _cwdProvider() : projectPathArg!;
+            return _effectiveProjectResolver?.Resolve(
+                _explicitProjectOverride, resolveCwd, _projectMap, _autodetect);
         }
         // A literal, explicit project name.
         return storeScope;

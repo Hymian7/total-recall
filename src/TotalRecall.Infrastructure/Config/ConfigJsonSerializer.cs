@@ -145,8 +145,31 @@ public static class ConfigJsonSerializer
             }
             if (Microsoft.FSharp.Core.FSharpOption<string>.get_IsSome(r.DefaultStoreScope))
             {
-                if (!firstRt) sb.Append(',');
+                if (!firstRt) sb.Append(','); firstRt = false;
                 AppendString(sb, "default_store_scope", r.DefaultStoreScope.Value);
+            }
+            if (Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Collections.FSharpMap<string, string>>.get_IsSome(r.ProjectMap))
+            {
+                if (!firstRt) sb.Append(','); firstRt = false;
+                AppendKey(sb, "project_map");
+                sb.Append('{');
+                bool firstPm = true;
+                // Deterministic key order (ordinal) so snapshots dedup byte-equal.
+                var pmKeys = new System.Collections.Generic.List<string>();
+                foreach (var kv in r.ProjectMap.Value) pmKeys.Add(kv.Key);
+                pmKeys.Sort(System.StringComparer.Ordinal);
+                foreach (var k in pmKeys)
+                {
+                    if (!firstPm) sb.Append(','); firstPm = false;
+                    AppendString(sb, k, r.ProjectMap.Value[k]);
+                }
+                sb.Append('}');
+            }
+            if (Microsoft.FSharp.Core.FSharpOption<bool>.get_IsSome(r.ProjectAutodetect))
+            {
+                if (!firstRt) sb.Append(','); firstRt = false;
+                AppendKey(sb, "project_autodetect");
+                sb.Append(r.ProjectAutodetect.Value ? "true" : "false");
             }
             sb.Append('}');
         }

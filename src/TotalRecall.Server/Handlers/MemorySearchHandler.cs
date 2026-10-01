@@ -66,7 +66,8 @@ public sealed class MemorySearchHandler : IToolHandler
             "tiers":        {"type":"array","items":{"type":"string","enum":["hot","warm","cold"]},"description":"Tiers to search (default: all)"},
             "contentTypes": {"type":"array","items":{"type":"string","enum":["memory","knowledge"]},"description":"Content types to search (default: all)"},
             "scopes":       {"type":"array","items":{"type":"string"},"description":"Scope(s) to search. Defaults to configured default scope. Pass multiple to broaden (e.g. [\"user:paul\",\"global:jira\"])."},
-            "project":      {"type":"string","description":"Restrict results to this project (plus global/general memories). Overrides configured project scoping for this call."}
+            "project":      {"type":"string","description":"Restrict results to this project (plus global/general memories). Overrides configured project scoping for this call."},
+            "project_path": {"type":"string","description":"Raw directory path to resolve the project from via the configured folder map (KiroCrew passes the per-call [PROJECT] path here). Lower precedence than an explicit project slug; falls back to the process cwd when omitted."}
           },
           "required": ["query"]
         }
@@ -87,6 +88,11 @@ public sealed class MemorySearchHandler : IToolHandler
     private readonly EffectiveProjectResolver? _effectiveProjectResolver;
     private readonly string? _explicitProjectOverride;
     private readonly Func<string> _cwdProvider;
+    // Folder map (canonical dir path -> slug) + autodetect flag, threaded into
+    // the resolver so both IDE (process cwd) and KiroCrew (project_path arg)
+    // resolve through the same map. Null map / false autodetect => legacy.
+    private readonly IReadOnlyDictionary<string, string>? _projectMap;
+    private readonly bool _autodetect;
 
     public MemorySearchHandler(
         IEmbedder embedder,
@@ -98,7 +104,9 @@ public sealed class MemorySearchHandler : IToolHandler
         string? projectScoping = null,
         EffectiveProjectResolver? effectiveProjectResolver = null,
         string? explicitProjectOverride = null,
-        Func<string>? cwdProvider = null)
+        Func<string>? cwdProvider = null,
+        IReadOnlyDictionary<string, string>? projectMap = null,
+        bool autodetect = false)
     {
         _embedder = embedder ?? throw new ArgumentNullException(nameof(embedder));
         _hybridSearch = hybridSearch ?? throw new ArgumentNullException(nameof(hybridSearch));
@@ -110,6 +118,8 @@ public sealed class MemorySearchHandler : IToolHandler
         _effectiveProjectResolver = effectiveProjectResolver;
         _explicitProjectOverride = explicitProjectOverride;
         _cwdProvider = cwdProvider ?? (() => Environment.CurrentDirectory);
+        _projectMap = projectMap;
+        _autodetect = autodetect;
     }
 
     public string Name => "memory_search";
@@ -163,7 +173,13 @@ public sealed class MemorySearchHandler : IToolHandler
             && string.Equals(_projectScoping, "strict", StringComparison.Ordinal)
             && _effectiveProjectResolver is not null)
         {
-            projectFilter = _effectiveProjectResolver.Resolve(_explicitProjectOverride, _cwdProvider());
+            // KiroCrew passes the raw [PROJECT] path per call in project_path;
+            // fall back to the process cwd when it is absent/empty. The explicit
+            // project slug arg (handled above) still wins over both.
+            var projectPathArg = ReadOptionalString(args, "project_path");
+            var resolveCwd = string.IsNullOrWhiteSpace(projectPathArg) ? _cwdProvider() : projectPathArg!;
+            projectFilter = _effectiveProjectResolver.Resolve(
+                _explicitProjectOverride, resolveCwd, _projectMap, _autodetect);
         }
 
         // Validate filter strings and convert to Tier / ContentType sets.

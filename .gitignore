@@ -32,3 +32,7 @@ models/bge-small-en-v1.5/
 src/TotalRecall.Web/wwwroot/
 src/TotalRecall.Web/ClientApp/node_modules/
 src/TotalRecall.Web/ClientApp/*.tsbuildinfo
+
+# KiroCrew-local, not part of the project: scratch specs + CLI settings/lock
+.kiro/scratch/
+.kiro/settings/

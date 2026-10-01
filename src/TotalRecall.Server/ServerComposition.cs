@@ -150,7 +150,9 @@ public static class ServerComposition
         string retrievalProjectScoping = "off",
         string defaultStoreScope = "global",
         EffectiveProjectResolver? effectiveProjectResolver = null,
-        string? explicitProjectOverride = null)
+        string? explicitProjectOverride = null,
+        IReadOnlyDictionary<string, string>? projectMap = null,
+        bool projectAutodetect = false)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(vectors);
@@ -168,11 +170,15 @@ public static class ServerComposition
         registry.Register(new MemoryStoreHandler(store, embedder, vectors, scopeDefault, pinnedMaxChars, hotMaxChars,
             defaultStoreScope: defaultStoreScope,
             effectiveProjectResolver: effectiveProjectResolver,
-            explicitProjectOverride: explicitProjectOverride));
+            explicitProjectOverride: explicitProjectOverride,
+            projectMap: projectMap,
+            autodetect: projectAutodetect));
         registry.Register(new MemorySearchHandler(embedder, hybrid, scopeDefault, retrievalLog, syncQueue, querySource,
             projectScoping: retrievalProjectScoping,
             effectiveProjectResolver: effectiveProjectResolver,
-            explicitProjectOverride: explicitProjectOverride));
+            explicitProjectOverride: explicitProjectOverride,
+            projectMap: projectMap,
+            autodetect: projectAutodetect));
         // Assistant-only feedback tool (Task 1.6). Registered immediately after
         // memory_search because it consumes the retrievalId memory_search emits.
         // Both production paths (sqlite + cortex) wire a RetrievalEventLog, so
@@ -513,7 +519,9 @@ public static class ServerComposition
                 retrievalProjectScoping: ResolveRetrievalProjectScoping(cfg),
                 defaultStoreScope: ResolveDefaultStoreScope(cfg),
                 effectiveProjectResolver: new EffectiveProjectResolver(),
-                explicitProjectOverride: ResolveExplicitProject(cfg));
+                explicitProjectOverride: ResolveExplicitProject(cfg),
+                projectMap: ResolveProjectMap(cfg),
+                projectAutodetect: ResolveProjectAutodetect(cfg));
 
             registry.Register(new UsageStatusHandler(usageQuery));
 
@@ -617,7 +625,9 @@ public static class ServerComposition
                 retrievalProjectScoping: ResolveRetrievalProjectScoping(cfg),
                 defaultStoreScope: ResolveDefaultStoreScope(cfg),
                 effectiveProjectResolver: new EffectiveProjectResolver(),
-                explicitProjectOverride: ResolveExplicitProject(cfg));
+                explicitProjectOverride: ResolveExplicitProject(cfg),
+                projectMap: ResolveProjectMap(cfg),
+                projectAutodetect: ResolveProjectAutodetect(cfg));
 
             return new ServerCompositionHandles(dataSource, registry, store, storageMode);
         }
@@ -835,7 +845,9 @@ public static class ServerComposition
                 retrievalProjectScoping: ResolveRetrievalProjectScoping(cfg),
                 defaultStoreScope: ResolveDefaultStoreScope(cfg),
                 effectiveProjectResolver: new EffectiveProjectResolver(),
-                explicitProjectOverride: ResolveExplicitProject(cfg));
+                explicitProjectOverride: ResolveExplicitProject(cfg),
+                projectMap: ResolveProjectMap(cfg),
+                projectAutodetect: ResolveProjectAutodetect(cfg));
 
             registry.Register(new UsageStatusHandler(usageQuery));
 
@@ -943,5 +955,36 @@ public static class ServerComposition
             return string.IsNullOrWhiteSpace(p) ? null : p;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Resolves the folder map from <c>[retrieval.project_map]</c> into a plain
+    /// <see cref="IReadOnlyDictionary{TKey,TValue}"/> (canonical dir path -> slug).
+    /// Keys are already normalized by <see cref="ConfigLoader"/>. Null when the
+    /// map is absent/empty.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? ResolveProjectMap(Core.Config.TotalRecallConfig cfg)
+    {
+        if (!FSharpOption<Core.Config.RetrievalConfig>.get_IsSome(cfg.Retrieval))
+            return null;
+        var mapOpt = cfg.Retrieval.Value.ProjectMap;
+        if (!FSharpOption<Microsoft.FSharp.Collections.FSharpMap<string, string>>.get_IsSome(mapOpt))
+            return null;
+        var dict = new Dictionary<string, string>();
+        foreach (var kv in mapOpt.Value)
+            dict[kv.Key] = kv.Value;
+        return dict.Count > 0 ? dict : null;
+    }
+
+    /// <summary>
+    /// Resolves <c>[retrieval] project_autodetect</c> (bool). Absent => false —
+    /// git auto-detect is OFF by default; the folder map is the resolution path.
+    /// </summary>
+    private static bool ResolveProjectAutodetect(Core.Config.TotalRecallConfig cfg)
+    {
+        if (FSharpOption<Core.Config.RetrievalConfig>.get_IsSome(cfg.Retrieval)
+            && FSharpOption<bool>.get_IsSome(cfg.Retrieval.Value.ProjectAutodetect))
+            return cfg.Retrieval.Value.ProjectAutodetect.Value;
+        return false;
     }
 }

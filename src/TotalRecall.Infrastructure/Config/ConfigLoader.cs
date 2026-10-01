@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Microsoft.FSharp.Core;
+using Microsoft.FSharp.Collections;
 using Tomlyn;
 using Tomlyn.Model;
 using Tomlyn.Syntax;
@@ -536,10 +537,21 @@ public sealed class ConfigLoader : IConfigLoader
             if (hasEnvProject)
                 project = FSharpOption<string>.Some(envProject!);
 
+            // [retrieval.project_map] — nested table of raw folder path -> slug.
+            // Each key is canonicalized IDENTICALLY to EffectiveProjectResolver's
+            // matcher (GetFullPath → '\\'->'/' → trim trailing '/' → lowercase on
+            // Windows) so a per-call cwd matches. Empty/absent => None.
+            var projectMap = TryGetProjectMap(retrievalTable);
+
+            // project_autodetect (bool). Absent => None (means false).
+            var projectAutodetect = TryGetBool(retrievalTable, "project_autodetect");
+
             var retrievalCfg = new Core.Config.RetrievalConfig(
                 projectScoping,
                 project,
-                defaultStoreScope);
+                defaultStoreScope,
+                projectMap,
+                projectAutodetect);
             retrieval = FSharpOption<Core.Config.RetrievalConfig>.Some(retrievalCfg);
         }
         else
@@ -614,6 +626,35 @@ public sealed class ConfigLoader : IConfigLoader
         table.TryGetValue(key, out var value) && value is string s
             ? FSharpOption<string>.Some(s)
             : FSharpOption<string>.None;
+
+    /// <summary>
+    /// Parse a <c>[retrieval.project_map]</c> nested TOML table into an F#
+    /// <c>Map&lt;string,string&gt; option</c>. Each key is canonicalized
+    /// IDENTICALLY to <see cref="TotalRecall.Infrastructure.Memory.EffectiveProjectResolver"/>'s
+    /// matcher (Path.GetFullPath → '\\'->'/' → trim trailing '/' → lowercase on
+    /// Windows) so a per-call cwd normalized the same way can match. Non-string
+    /// values are skipped. Empty/absent map => None.
+    /// </summary>
+    private static FSharpOption<FSharpMap<string, string>> TryGetProjectMap(TomlTable table)
+    {
+        if (!table.TryGetValue("project_map", out var value) || value is not TomlTable mapTable)
+            return FSharpOption<FSharpMap<string, string>>.None;
+
+        var pairs = new List<Tuple<string, string>>(mapTable.Count);
+        foreach (var kv in mapTable)
+        {
+            if (kv.Value is not string slug) continue;
+            var canonical = TotalRecall.Infrastructure.Memory.EffectiveProjectResolver.Canonicalize(kv.Key);
+            if (canonical is null) continue;
+            pairs.Add(Tuple.Create(canonical, slug));
+        }
+
+        if (pairs.Count == 0)
+            return FSharpOption<FSharpMap<string, string>>.None;
+
+        var map = MapModule.OfSeq(pairs);
+        return FSharpOption<FSharpMap<string, string>>.Some(map);
+    }
 
     private static FSharpOption<string[]> TryGetStringArray(TomlTable table, string key)
     {

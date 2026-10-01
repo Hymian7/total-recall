@@ -696,6 +696,91 @@ public sealed class ConfigLoaderTests : IDisposable
         Assert.Equal("from-config", cfg.Retrieval.Value.Project.Value);
     }
 
+    [Fact]
+    public void LoadEffectiveConfig_ProjectMap_ParsesAndNormalizesKeys()
+    {
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_PROJECT", null);
+        var cfgPath = Path.Combine(_tempDir, "config.toml");
+        // Use forward slashes + a trailing slash so we can prove normalization
+        // (GetFullPath → '\\'->'/' → trim trailing '/' → lowercase on Windows).
+        File.WriteAllText(cfgPath, """
+            [retrieval.project_map]
+            "C:/Dev/Total-Recall/" = "total-recall"
+            "C:/Dev/l2-mock-infra" = "l2-mock-infra"
+            """);
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_HOME", _tempDir);
+
+        var cfg = new ConfigLoader().LoadEffectiveConfig(cfgPath);
+
+        Assert.True(Microsoft.FSharp.Core.FSharpOption<TotalRecall.Core.Config.RetrievalConfig>
+            .get_IsSome(cfg.Retrieval));
+        var mapOpt = cfg.Retrieval.Value.ProjectMap;
+        Assert.True(Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Collections.FSharpMap<string, string>>
+            .get_IsSome(mapOpt));
+        var map = mapOpt.Value;
+
+        // Keys are normalized exactly like the resolver's Canonicalize.
+        var key1 = TotalRecall.Infrastructure.Memory.EffectiveProjectResolver.Canonicalize("C:/Dev/Total-Recall/");
+        var key2 = TotalRecall.Infrastructure.Memory.EffectiveProjectResolver.Canonicalize("C:/Dev/l2-mock-infra");
+        Assert.Equal("total-recall", map[key1!]);
+        Assert.Equal("l2-mock-infra", map[key2!]);
+        // Trailing slash was trimmed off the first key.
+        Assert.DoesNotContain(map.Keys, k => k.EndsWith('/'));
+    }
+
+    [Fact]
+    public void LoadEffectiveConfig_NoProjectMap_ProjectMapIsNone()
+    {
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_PROJECT", null);
+        var cfgPath = Path.Combine(_tempDir, "config.toml");
+        File.WriteAllText(cfgPath, """
+            [retrieval]
+            project_scoping = "strict"
+            """);
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_HOME", _tempDir);
+
+        var cfg = new ConfigLoader().LoadEffectiveConfig(cfgPath);
+
+        Assert.True(Microsoft.FSharp.Core.FSharpOption<Microsoft.FSharp.Collections.FSharpMap<string, string>>
+            .get_IsNone(cfg.Retrieval.Value.ProjectMap));
+    }
+
+    [Fact]
+    public void LoadEffectiveConfig_ProjectAutodetect_ParsesTrue()
+    {
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_PROJECT", null);
+        var cfgPath = Path.Combine(_tempDir, "config.toml");
+        File.WriteAllText(cfgPath, """
+            [retrieval]
+            project_autodetect = true
+            """);
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_HOME", _tempDir);
+
+        var cfg = new ConfigLoader().LoadEffectiveConfig(cfgPath);
+
+        Assert.True(Microsoft.FSharp.Core.FSharpOption<bool>
+            .get_IsSome(cfg.Retrieval.Value.ProjectAutodetect));
+        Assert.True(cfg.Retrieval.Value.ProjectAutodetect.Value);
+    }
+
+    [Fact]
+    public void LoadEffectiveConfig_ProjectAutodetect_DefaultsToNone_MeaningFalse()
+    {
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_PROJECT", null);
+        var cfgPath = Path.Combine(_tempDir, "config.toml");
+        File.WriteAllText(cfgPath, """
+            [retrieval]
+            project_scoping = "strict"
+            """);
+        Environment.SetEnvironmentVariable("TOTAL_RECALL_HOME", _tempDir);
+
+        var cfg = new ConfigLoader().LoadEffectiveConfig(cfgPath);
+
+        // Absent project_autodetect → None (means false — autodetect off).
+        Assert.True(Microsoft.FSharp.Core.FSharpOption<bool>
+            .get_IsNone(cfg.Retrieval.Value.ProjectAutodetect));
+    }
+
     // --- [tiers.pinned] floor config tests --------------------------------
 
     [Fact]
